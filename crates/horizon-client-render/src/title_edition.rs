@@ -353,10 +353,14 @@ impl RustTexture {
         Self { colors, rust }
     }
 
-    fn sample(&self, x: usize, y: usize) -> Option<(Rgba, u8)> {
-        let (tx, ty) = banner_to_texel(x as f64 + 0.5, y)?;
+    fn sample_at(&self, xf: f64, y: usize) -> Option<(Rgba, u8)> {
+        let (tx, ty) = banner_to_texel(xf, y)?;
         let idx = ty * TEX_WIDTH + tx;
         Some((self.colors[idx], self.rust[idx]))
+    }
+
+    fn sample(&self, x: usize, y: usize) -> Option<(Rgba, u8)> {
+        self.sample_at(x as f64 + 0.5, y)
     }
 }
 
@@ -378,13 +382,13 @@ fn banner_to_texel(xf: f64, y: usize) -> Option<(usize, usize)> {
     // grooves 3 px thick, others 2 px, and the bottom groove 1 px after the
     // 1 px bottom specular highlight ate half of it (and box-filtering fixed
     // the thickness by turning crisp pixel art into blurry soup). Stepping
-    // in 7 px strips (2 px groove, 2 px highlight, 3 px base, with 36..38
-    // for bottom groove 15 and 38 for the specular edge) keeps every groove
-    // an exact, crisp 2 px.
+    // in 7 px strips (2 px groove, 2 px highlight, 3 px base, clamping row 35
+    // onto plate row 14 and keeping 36..=37 for bottom groove 15 plus 38 for
+    // the specular edge) keeps every groove an exact, crisp 2 px.
     let ty = if ly >= 36 {
         15
     } else {
-        (ly / 7) * 3 + (ly % 7).min(5) / 2
+        ((ly / 7) * 3 + (ly % 7).min(5) / 2).min(14)
     };
     let dy = (FACE_TOP + FACE_HEIGHT - 1 - y) as f64;
     let ox = VANISH_X + (xf - VANISH_X) * (1.0 + dy * PERSPECTIVE);
@@ -530,7 +534,7 @@ fn draw_glyphs(
                 }
             }
         }
-        (face_sub, outline_sub)
+        (face_sub, body_sub, outline_sub)
     });
 
     let reach = OUTLINE as isize + 1;
@@ -557,66 +561,102 @@ fn draw_glyphs(
                     base_col
                 };
                 if (!at(face, xi - 1, yi) || !at(face, xi + 1, yi))
-                    && let Some((face_sub, _)) = &sub_grids
+                    && let Some((face_sub, body_sub, _)) = &sub_grids
                 {
                     let fcov = (x * SUB..(x + 1) * SUB)
                         .filter(|&sx| face_sub[y * W_SUB + sx])
                         .count();
                     if fcov > 0 && fcov < SUB {
-                        fg = lerp_rgba(palette.extrusion, fg, fcov as f32 / SUB as f32);
+                        let on_body = (x * SUB..(x + 1) * SUB)
+                            .any(|sx| !face_sub[y * W_SUB + sx] && body_sub[y * W_SUB + sx]);
+                        let bg = if on_body {
+                            palette.extrusion
+                        } else {
+                            palette.outline
+                        };
+                        fg = lerp_rgba(bg, fg, fcov as f32 / SUB as f32);
                     }
                 }
                 fg
-            } else if at(&body, xi, yi) {
-                let rusty_drop = rust_data.is_some() && body_rust[y * WIDTH + x] >= 3;
-                if at(face, xi, yi - 1) {
-                    if rusty_drop {
-                        lerp_rgba(palette.rim, [110, 52, 26, 255], 0.35)
-                    } else {
-                        palette.rim
-                    }
-                } else if !at(&body, xi - 1, yi) || !at(&body, xi + 1, yi) || !at(&body, xi, yi + 1)
-                {
-                    if rusty_drop {
-                        lerp_rgba(palette.edge, [54, 24, 10, 255], 0.55)
-                    } else {
-                        palette.edge
-                    }
-                } else if rusty_drop {
-                    lerp_rgba(palette.extrusion, [69, 40, 28, 255], 0.55)
-                } else {
-                    palette.extrusion
-                }
-            } else if let Some((_, outline_sub)) = &sub_grids {
-                if y >= 55 || x >= 195 {
-                    continue;
-                }
-                let ocov = (x * SUB..(x + 1) * SUB)
-                    .filter(|&sx| outline_sub[y * W_SUB + sx])
-                    .count();
-                if ocov == SUB {
-                    palette.outline
-                } else if ocov > 0 {
-                    [
-                        palette.outline[0],
-                        palette.outline[1],
-                        palette.outline[2],
-                        (ocov * 244 / SUB) as u8,
-                    ]
-                } else {
-                    continue;
-                }
             } else {
-                let distance = (-reach..=reach)
-                    .flat_map(|dy| (-reach..=reach).map(move |dx| (dx, dy)))
-                    .filter(|&(dx, dy)| at(&body, xi + dx, yi + dy))
-                    .map(|(dx, dy)| dx.abs().max(dy.abs()))
-                    .min();
-                match distance {
-                    Some(d) if d <= OUTLINE as isize => palette.outline,
-                    Some(_) => palette.soft,
-                    None => continue,
+                let mut bg = if at(&body, xi, yi) {
+                    let rusty_drop = rust_data.is_some() && body_rust[y * WIDTH + x] >= 3;
+                    if at(face, xi, yi - 1) {
+                        if rusty_drop {
+                            lerp_rgba(palette.rim, [110, 52, 26, 255], 0.35)
+                        } else {
+                            palette.rim
+                        }
+                    } else if !at(&body, xi - 1, yi)
+                        || !at(&body, xi + 1, yi)
+                        || !at(&body, xi, yi + 1)
+                    {
+                        if rusty_drop {
+                            lerp_rgba(palette.edge, [54, 24, 10, 255], 0.55)
+                        } else {
+                            palette.edge
+                        }
+                    } else if rusty_drop {
+                        lerp_rgba(palette.extrusion, [69, 40, 28, 255], 0.55)
+                    } else {
+                        palette.extrusion
+                    }
+                } else if let Some((_, _, outline_sub)) = &sub_grids {
+                    if y >= 55 || x >= 195 {
+                        continue;
+                    }
+                    let ocov = (x * SUB..(x + 1) * SUB)
+                        .filter(|&sx| outline_sub[y * W_SUB + sx])
+                        .count();
+                    if ocov == SUB {
+                        palette.outline
+                    } else if ocov > 0 {
+                        [
+                            palette.outline[0],
+                            palette.outline[1],
+                            palette.outline[2],
+                            (ocov * 244 / SUB) as u8,
+                        ]
+                    } else {
+                        continue;
+                    }
+                } else {
+                    let distance = (-reach..=reach)
+                        .flat_map(|dy| (-reach..=reach).map(move |dx| (dx, dy)))
+                        .filter(|&(dx, dy)| at(&body, xi + dx, yi + dy))
+                        .map(|(dx, dy)| dx.abs().max(dy.abs()))
+                        .min();
+                    match distance {
+                        Some(d) if d <= OUTLINE as isize => palette.outline,
+                        Some(_) => palette.soft,
+                        None => continue,
+                    }
+                };
+                if let Some((face_sub, _, _)) = &sub_grids
+                    && let Some((_, rust_tex)) = rust_data
+                    && (FACE_TOP..FACE_TOP + FACE_HEIGHT).contains(&y)
+                    && x < EDITION_START
+                {
+                    let fcov = (x * SUB..(x + 1) * SUB)
+                        .filter(|&sx| face_sub[y * W_SUB + sx])
+                        .count();
+                    if fcov > 0
+                        && fcov < SUB
+                        && let Some(sx) =
+                            (x * SUB..(x + 1) * SUB).find(|&sx| face_sub[y * W_SUB + sx])
+                    {
+                        let base_col = rust_tex
+                            .sample_at((sx as f64 + 0.5) / SUB as f64, y)
+                            .map_or(palette.face, |(c, _)| c);
+                        let fg = if y + 1 >= HEIGHT || !face_sub[(y + 1) * W_SUB + sx] {
+                            lerp_rgba(base_col, palette.highlight, 0.60)
+                        } else {
+                            lerp_rgba(base_col, palette.rim, 0.35)
+                        };
+                        bg = lerp_rgba(bg, fg, fcov as f32 / SUB as f32);
+                    }
                 }
+                bg
             };
             put(out, x, y, colour);
         }
@@ -905,7 +945,30 @@ mod tests {
 
     #[test]
     fn rust_texture_has_iron_grooves_and_rust_tones() {
-        let out = compose(&stand_in());
+        let pixels = stand_in();
+        let palette = Palette::sample(&pixels);
+        let mask = texel_mask();
+        let tex_a = RustTexture::generate(&mask, &palette, RUST_SEED);
+        let tex_b = RustTexture::generate(&mask, &palette, RUST_SEED);
+        assert_eq!(tex_a.colors, tex_b.colors);
+        assert_eq!(tex_a.rust, tex_b.rust);
+
+        // Every corrugated groove maps to an exact 2 px strip, with ly == 35
+        // staying on plate row 14 so the bottom groove (36..=37 + highlight 38)
+        // is also 2 px rather than 3 px.
+        let ty_at = |ly: usize| {
+            banner_to_texel(FIRST_FACE as f64 + 8.5, FACE_TOP + ly)
+                .unwrap()
+                .1
+        };
+        for ly in [0, 7, 14, 21, 28] {
+            assert_eq!((ty_at(ly) % 3, ty_at(ly + 1) % 3), (0, 0), "groove at {ly}");
+            assert_ne!(ty_at(ly + 2) % 3, 0, "plate after groove at {ly}");
+        }
+        assert_eq!(ty_at(35), 14);
+        assert_eq!((ty_at(36), ty_at(37), ty_at(38)), (15, 15, 15));
+
+        let out = compose(&pixels);
         let mut has_rust = false;
         let mut has_iron = false;
         for y in FACE_TOP..FACE_TOP + FACE_HEIGHT {
@@ -921,6 +984,13 @@ mod tests {
             }
         }
         assert!(has_rust && has_iron);
+
+        // At (11, 7) the R stem center misses the face while 4/8 subpixels hit;
+        // partial face coverage should blend between outline (0) and interior.
+        let edge = pixel(&out, 11, 7);
+        let interior = pixel(&out, 12, 7);
+        assert_eq!(edge[3], 255);
+        assert!(lum(edge) > 0 && lum(edge) < lum(interior));
     }
 
     /// Against the prepared vanilla resources when they are present.
