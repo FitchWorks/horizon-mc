@@ -350,6 +350,8 @@ as `--glass-*`.
   fonts in `HORIZON_LAUNCHER_PAGE=specimen` to see whether digits stay aligned, and use GPUI's
   `.font_features(...)` for other OpenType features (`case`, `liga`, `frac`) in bundled TrueType
   fonts.
+- **Proxy field** (Settings → Network): the address uses the full padded width of the
+  field and scrolls horizontally to keep the caret visible.
 - **Icons**: Hugeicons' free set (MIT), the ones the mockup uses, stroked 1.6 in the text colour
   (`crates/horizon-theme/icons/glass/`, served as `icons/glass/<name>.svg`).
 
